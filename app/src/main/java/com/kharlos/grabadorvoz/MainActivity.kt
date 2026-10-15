@@ -1,6 +1,12 @@
 package com.kharlos.grabadorvoz
 
 import android.Manifest
+import android.animation.ValueAnimator
+import android.view.MotionEvent
+import android.view.ViewConfiguration
+import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
+import android.view.inputmethod.InputMethodManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -120,6 +126,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Panel de grabaciones deslizable: 0 = normal, 1 = arriba del todo (tapa el grabador)
+    private lateinit var topSection: View
+    private lateinit var listSheet: View
+    private lateinit var rvRecordings: RecyclerView
+    private var sheetExpanded = 0f
+    private var sheetAnim: ValueAnimator? = null
+
+    private val collapseSheet = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            animateSheet(0f)
+        }
+    }
+
     private val backFromLibrary = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
             if (libFolder != null) showFolders() else closeLibrary()
@@ -170,6 +189,13 @@ class MainActivity : AppCompatActivity() {
         btnSpeed = findViewById(R.id.btnSpeed)
         timerDefaultColor = tvTimer.textColors
 
+        topSection = findViewById(R.id.topSection)
+        listSheet = findViewById(R.id.listSheet)
+        rvRecordings = findViewById(R.id.rvRecordings)
+        setupSheet()
+
+        // El último registrado tiene prioridad: primero se cierra la biblioteca, luego se baja el panel.
+        onBackPressedDispatcher.addCallback(this, collapseSheet)
         onBackPressedDispatcher.addCallback(this, backFromLibrary)
 
         // Calidad
@@ -203,10 +229,8 @@ class MainActivity : AppCompatActivity() {
         homeAdapter = RecordingsAdapter(true, { play(it) }, { rec, anchor -> showRecordingMenu(rec, anchor) })
         libAdapter = RecordingsAdapter(false, { play(it) }, { rec, anchor -> showRecordingMenu(rec, anchor) })
         foldersAdapter = FoldersAdapter({ openFolder(it.dir) }, { item, anchor -> showFolderMenu(item.dir, anchor) })
-        findViewById<RecyclerView>(R.id.rvRecordings).apply {
-            layoutManager = LinearLayoutManager(this@MainActivity)
-            adapter = homeAdapter
-        }
+        rvRecordings.layoutManager = LinearLayoutManager(this)
+        rvRecordings.adapter = homeAdapter
         rvLibrary.layoutManager = LinearLayoutManager(this)
 
         // Botones de grabación
@@ -274,6 +298,83 @@ class MainActivity : AppCompatActivity() {
         player?.release()
         player = null
         super.onDestroy()
+    }
+
+    // ================= Panel deslizable =================
+
+    private fun setupSheet() {
+        listSheet.isClickable = true // que los toques no pasen al grabador de abajo
+        topSection.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if (bottom - top != oldBottom - oldTop) applySheet(sheetExpanded)
+        }
+        val slop = ViewConfiguration.get(this).scaledTouchSlop
+        val header = findViewById<View>(R.id.sheetHeader)
+        header.setOnTouchListener(object : View.OnTouchListener {
+            var startY = 0f
+            var startT = 0f
+            var lastY = 0f
+            var lastTime = 0L
+            var velocity = 0f
+            var moved = false
+
+            override fun onTouch(v: View, e: MotionEvent): Boolean {
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        sheetAnim?.cancel()
+                        startY = e.rawY
+                        startT = listSheet.translationY
+                        lastY = e.rawY
+                        lastTime = e.eventTime
+                        velocity = 0f
+                        moved = false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dy = e.rawY - startY
+                        if (abs(dy) > slop) moved = true
+                        val dt = e.eventTime - lastTime
+                        if (dt > 0) velocity = (e.rawY - lastY) / dt * 1000f
+                        lastY = e.rawY
+                        lastTime = e.eventTime
+                        val max = sheetMax()
+                        if (moved && max > 0f) applySheet(1f - (startT + dy).coerceIn(0f, max) / max)
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        val target = when {
+                            !moved -> if (sheetExpanded > 0.5f) 0f else 1f // un toque alterna
+                            abs(velocity) > 800f -> if (velocity < 0) 1f else 0f
+                            else -> if (sheetExpanded > 0.5f) 1f else 0f
+                        }
+                        animateSheet(target)
+                        v.performClick()
+                    }
+                    MotionEvent.ACTION_CANCEL -> animateSheet(if (sheetExpanded > 0.5f) 1f else 0f)
+                }
+                return true
+            }
+        })
+    }
+
+    private fun sheetMax() = topSection.height.toFloat()
+
+    private fun applySheet(fraction: Float) {
+        sheetExpanded = fraction.coerceIn(0f, 1f)
+        val t = sheetMax() * (1f - sheetExpanded)
+        listSheet.translationY = t
+        topSection.alpha = 1f - 0.7f * sheetExpanded
+        // El panel se corre hacia abajo; el espacio extra al final permite ver el último audio.
+        val extra = t.toInt() + (8 * resources.displayMetrics.density).toInt()
+        if (rvRecordings.paddingBottom != extra) rvRecordings.setPadding(0, 0, 0, extra)
+        collapseSheet.isEnabled = sheetExpanded > 0.5f
+    }
+
+    private fun animateSheet(target: Float) {
+        sheetAnim?.cancel()
+        sheetAnim = ValueAnimator.ofFloat(sheetExpanded, target).apply {
+            duration = 220
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { applySheet(it.animatedValue as Float) }
+            start()
+        }
     }
 
     // ================= Grabación =================
@@ -514,7 +615,7 @@ class MainActivity : AppCompatActivity() {
                 topMargin = pad / 2
             })
         }
-        AlertDialog.Builder(this)
+        val builder = AlertDialog.Builder(this)
             .setTitle("Guardar grabación")
             .setView(container)
             .setCancelable(false)
@@ -525,7 +626,23 @@ class MainActivity : AppCompatActivity() {
                 store.move(current, chosenDir)?.let { current = it }
                 refreshAll()
             }
-            .show()
+        showWithKeyboard(builder, input)
+    }
+
+    /** Muestra el diálogo con el cursor en el campo de texto y el teclado abierto. */
+    private fun showWithKeyboard(builder: AlertDialog.Builder, input: EditText) {
+        val dialog = builder.create()
+        dialog.window?.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        )
+        dialog.setOnShowListener {
+            input.requestFocus()
+            input.selectAll()
+            input.postDelayed({
+                getSystemService(InputMethodManager::class.java)?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+            }, 150)
+        }
+        dialog.show()
     }
 
     // ================= Carpetas =================
@@ -837,7 +954,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(pad, pad / 2, pad, 0)
             addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         }
-        AlertDialog.Builder(this)
+        val builder = AlertDialog.Builder(this)
             .setTitle(title)
             .setView(container)
             .setPositiveButton(positive) { _, _ ->
@@ -845,8 +962,7 @@ class MainActivity : AppCompatActivity() {
                 if (text.isNotBlank()) onOk(text)
             }
             .setNegativeButton("Cancelar", null)
-            .show()
-        input.requestFocus()
+        showWithKeyboard(builder, input)
     }
 
     private fun toast(msg: String) {

@@ -12,11 +12,18 @@
         android:layout_weight="1">
 
         <!-- ============ Inicio ============ -->
-        <LinearLayout
+        <FrameLayout
             android:id="@+id/homePage"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:orientation="vertical">
+            android:layout_height="match_parent">
+
+          <!-- Parte de arriba: título y grabador (el panel de grabaciones se desliza encima) -->
+          <LinearLayout
+            android:id="@+id/topSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingBottom="8dp">
 
             <TextView
                 android:layout_width="match_parent"
@@ -185,11 +192,32 @@
                     </LinearLayout>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
+          </LinearLayout>
+
+          <!-- Panel de grabaciones: se arrastra desde su encabezado -->
+          <LinearLayout
+            android:id="@+id/listSheet"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/bg_sheet"
+            android:orientation="vertical">
 
             <LinearLayout
+                android:id="@+id/sheetHeader"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+              <View
+                android:layout_width="36dp"
+                android:layout_height="4dp"
+                android:layout_gravity="center_horizontal"
                 android:layout_marginTop="8dp"
+                android:background="@drawable/bg_handle" />
+
+              <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
                 android:paddingStart="20dp"
@@ -209,6 +237,7 @@
                     android:layout_height="wrap_content"
                     android:text="Biblioteca"
                     app:icon="@drawable/ic_library" />
+              </LinearLayout>
             </LinearLayout>
 
             <FrameLayout
@@ -227,12 +256,14 @@
                     android:id="@+id/tvEmpty"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="center"
+                    android:layout_gravity="top|center_horizontal"
+                    android:layout_marginTop="32dp"
                     android:text="Aún no hay grabaciones"
                     android:textAppearance="?attr/textAppearanceBodyMedium"
                     android:visibility="gone" />
             </FrameLayout>
-        </LinearLayout>
+          </LinearLayout>
+        </FrameLayout>
 
         <!-- ============ Biblioteca ============ -->
         <LinearLayout
