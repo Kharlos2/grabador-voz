@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioManager
 import android.media.MediaRecorder
 import android.os.Binder
 import android.os.Build
@@ -14,6 +15,12 @@ import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import java.io.File
+
+enum class Quality(val hint: String) {
+    VOICE("Voz: notas y clases · ~1 MB por minuto"),
+    HIGH("Alta: estéreo, más detalle · ~2 MB por minuto"),
+    MUSIC("Música: sin filtros del teléfono · ~2 MB por minuto")
+}
 
 /** Graba el audio. Corre como servicio en primer plano para seguir grabando con la app cerrada o la pantalla apagada. */
 class RecordingService : Service() {
@@ -49,23 +56,62 @@ class RecordingService : Service() {
         return START_NOT_STICKY
     }
 
-    fun start(target: File): Boolean {
-        if (state != State.IDLE) return false
+    private data class Config(val source: Int, val channels: Int, val rate: Int, val bitrate: Int)
+
+    /** Configuraciones a intentar en orden; si el teléfono no soporta una, pasa a la siguiente. */
+    private fun configsFor(quality: Quality): List<Config> {
+        val mic = MediaRecorder.AudioSource.MIC
+        return when (quality) {
+            Quality.VOICE -> listOf(Config(mic, 1, 44_100, 128_000))
+            Quality.HIGH -> listOf(
+                Config(mic, 2, 48_000, 256_000),
+                Config(mic, 1, 48_000, 192_000),
+                Config(mic, 1, 44_100, 128_000)
+            )
+            Quality.MUSIC -> {
+                val list = mutableListOf<Config>()
+                val am = getSystemService(AudioManager::class.java)
+                if (am?.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) == "true") {
+                    val raw = MediaRecorder.AudioSource.UNPROCESSED
+                    list.add(Config(raw, 2, 48_000, 256_000))
+                    list.add(Config(raw, 1, 48_000, 192_000))
+                }
+                list.add(Config(MediaRecorder.AudioSource.VOICE_RECOGNITION, 2, 48_000, 256_000))
+                list.add(Config(mic, 2, 48_000, 256_000))
+                list.add(Config(mic, 1, 44_100, 128_000))
+                list
+            }
+        }
+    }
+
+    private fun tryStart(c: Config, target: File): MediaRecorder? {
         val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else @Suppress("DEPRECATION") MediaRecorder()
-        try {
-            r.setAudioSource(MediaRecorder.AudioSource.MIC)
+        return try {
+            r.setAudioSource(c.source)
             r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            r.setAudioEncodingBitRate(128_000)
-            r.setAudioSamplingRate(44_100)
+            r.setAudioChannels(c.channels)
+            r.setAudioEncodingBitRate(c.bitrate)
+            r.setAudioSamplingRate(c.rate)
             r.setOutputFile(target.absolutePath)
             r.prepare()
             r.start()
+            r
         } catch (e: Exception) {
             r.release()
             target.delete()
-            return false
+            null
         }
+    }
+
+    fun start(target: File, quality: Quality): Boolean {
+        if (state != State.IDLE) return false
+        var r: MediaRecorder? = null
+        for (c in configsFor(quality)) {
+            r = tryStart(c, target)
+            if (r != null) break
+        }
+        if (r == null) return false
         recorder = r
         file = target
         accumulated = 0L
