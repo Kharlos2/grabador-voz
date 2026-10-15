@@ -112,6 +112,10 @@ class MainActivity : AppCompatActivity() {
         if (hasMic()) startRecording() else toast("Se necesita permiso de micrófono para grabar")
     }
 
+    private val editLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        refreshAll()
+    }
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val s = (binder as RecordingService.LocalBinder).service
@@ -518,12 +522,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun showRecordingMenu(rec: Recording, anchor: View) {
         PopupMenu(this, anchor).apply {
-            menu.add(0, 1, 0, "Compartir")
-            menu.add(0, 2, 1, "Renombrar")
-            menu.add(0, 3, 2, "Mover a carpeta")
-            menu.add(0, 4, 3, "Eliminar")
+            menu.add(0, 5, 0, "Editar")
+            menu.add(0, 1, 1, "Compartir")
+            menu.add(0, 2, 2, "Renombrar")
+            menu.add(0, 3, 3, "Mover a carpeta")
+            menu.add(0, 4, 4, "Eliminar")
             setOnMenuItemClickListener {
                 when (it.itemId) {
+                    5 -> openEditor(rec.file)
                     1 -> share(rec.file)
                     2 -> renameRecording(rec.file)
                     3 -> moveRecording(rec.file)
@@ -533,6 +539,16 @@ class MainActivity : AppCompatActivity() {
             }
             show()
         }
+    }
+
+    private fun openEditor(file: File) {
+        if (recState != RecordingService.State.IDLE) {
+            toast("Guarda o descarta la grabación antes de editar")
+            return
+        }
+        if (playing?.file == file) closePlayer() // el editor usa su propio reproductor
+        else pausePlayback()
+        editLauncher.launch(Intent(this, EditorActivity::class.java).putExtra(EditorActivity.EXTRA_PATH, file.absolutePath))
     }
 
     private fun share(file: File) {
