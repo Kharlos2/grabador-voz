@@ -4,9 +4,10 @@ App Android sencilla para grabar notas de voz.
 
 - Grabar, pausar, retomar, guardar o descartar.
 - Lista de grabaciones con duración, fecha y tamaño.
-- Reproductor con barra para adelantar/atrasar, botones de ±10 s, velocidad 1x / 1.5x / 2x.
+- Ondas en vivo mientras graba.
+- Reproductor con las ondas del audio: se arrastra la bolita para adelantar/atrasar, botones de ±10 s, velocidad 1x / 1.5x / 2x.
 - Compartir (WhatsApp, Drive, etc.), renombrar y eliminar.
-- No graba en segundo plano: al salir de la app, la grabación se pausa.
+- Graba en segundo plano, con notificación para pausar, retomar o guardar.
 
 ## Descargar
 

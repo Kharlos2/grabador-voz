@@ -9,8 +9,9 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingHorizontal="20dp"
+        android:paddingStart="20dp"
         android:paddingTop="20dp"
+        android:paddingEnd="20dp"
         android:paddingBottom="12dp"
         android:text="@string/app_name"
         android:textAppearance="?attr/textAppearanceHeadlineSmall" />
@@ -20,7 +21,8 @@
         style="?attr/materialCardViewFilledStyle"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginHorizontal="16dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
         app:cardCornerRadius="20dp">
 
         <LinearLayout
@@ -28,7 +30,8 @@
             android:layout_height="wrap_content"
             android:gravity="center_horizontal"
             android:orientation="vertical"
-            android:padding="20dp">
+            android:paddingTop="16dp"
+            android:paddingBottom="16dp">
 
             <TextView
                 android:id="@+id/tvTimer"
@@ -37,7 +40,7 @@
                 android:fontFamily="sans-serif-light"
                 android:fontFeatureSettings="tnum"
                 android:text="00:00"
-                android:textSize="52sp" />
+                android:textSize="46sp" />
 
             <TextView
                 android:id="@+id/tvStatus"
@@ -45,37 +48,96 @@
                 android:layout_height="wrap_content"
                 android:textAppearance="?attr/textAppearanceBodyMedium" />
 
+            <com.kharlos.grabadorvoz.WaveformView
+                android:id="@+id/liveWave"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginTop="12dp"
+                android:paddingStart="20dp"
+                android:paddingEnd="20dp" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="16dp"
-                android:gravity="center"
+                android:baselineAligned="false"
+                android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnDiscard"
-                    style="@style/Widget.Material3.Button.TextButton"
-                    android:layout_width="wrap_content"
+                <LinearLayout
+                    android:id="@+id/colDiscard"
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:text="Descartar" />
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnRecord"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginHorizontal="8dp"
-                    android:minWidth="130dp"
-                    android:text="Grabar"
-                    app:backgroundTint="@color/record_red"
-                    app:icon="@drawable/ic_mic" />
+                    <ImageButton
+                        android:id="@+id/btnDiscard"
+                        android:layout_width="52dp"
+                        android:layout_height="52dp"
+                        android:background="@drawable/bg_circle_soft"
+                        android:contentDescription="Descartar"
+                        android:src="@drawable/ic_delete" />
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnSave"
-                    style="@style/Widget.Material3.Button.TonalButton"
-                    android:layout_width="wrap_content"
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:text="Descartar"
+                        android:textAppearance="?attr/textAppearanceLabelMedium" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:text="Guardar"
-                    app:icon="@drawable/ic_stop" />
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <ImageButton
+                        android:id="@+id/btnRecord"
+                        android:layout_width="76dp"
+                        android:layout_height="76dp"
+                        android:background="@drawable/bg_circle_red"
+                        android:contentDescription="Grabar"
+                        android:padding="22dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_mic"
+                        app:tint="@android:color/white" />
+
+                    <TextView
+                        android:id="@+id/tvRecordLabel"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:text="Grabar"
+                        android:textAppearance="?attr/textAppearanceLabelLarge" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/colSave"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <ImageButton
+                        android:id="@+id/btnSave"
+                        android:layout_width="52dp"
+                        android:layout_height="52dp"
+                        android:background="@drawable/bg_circle_soft"
+                        android:contentDescription="Guardar"
+                        android:src="@drawable/ic_check" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:text="Guardar"
+                        android:textAppearance="?attr/textAppearanceLabelMedium" />
+                </LinearLayout>
             </LinearLayout>
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
@@ -83,8 +145,9 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingHorizontal="20dp"
+        android:paddingStart="20dp"
         android:paddingTop="20dp"
+        android:paddingEnd="20dp"
         android:paddingBottom="4dp"
         android:text="Grabaciones"
         android:textAppearance="?attr/textAppearanceTitleMedium" />
@@ -125,8 +188,9 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:paddingHorizontal="12dp"
+            android:paddingStart="12dp"
             android:paddingTop="8dp"
+            android:paddingEnd="12dp"
             android:paddingBottom="12dp">
 
             <LinearLayout
@@ -154,17 +218,20 @@
                     android:src="@drawable/ic_close" />
             </LinearLayout>
 
-            <SeekBar
-                android:id="@+id/seekBar"
+            <com.kharlos.grabadorvoz.WaveformView
+                android:id="@+id/playWave"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:paddingVertical="12dp" />
+                android:layout_height="56dp"
+                android:layout_marginTop="4dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
-                android:paddingHorizontal="8dp">
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp">
 
                 <TextView
                     android:id="@+id/tvPosition"
@@ -213,7 +280,8 @@
                     android:id="@+id/btnPlayPause"
                     android:layout_width="56dp"
                     android:layout_height="56dp"
-                    android:layout_marginHorizontal="8dp"
+                    android:layout_marginStart="8dp"
+                    android:layout_marginEnd="8dp"
                     android:background="@drawable/bg_circle"
                     android:contentDescription="Reproducir o pausar"
                     android:src="@drawable/ic_pause"

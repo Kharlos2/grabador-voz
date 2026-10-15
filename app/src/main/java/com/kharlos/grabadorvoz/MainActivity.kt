@@ -1,24 +1,25 @@
 package com.kharlos.grabadorvoz
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
-import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.view.View
-import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.PopupMenu
-import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,21 +35,24 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.concurrent.thread
+import kotlin.math.abs
 
 class MainActivity : AppCompatActivity() {
-
-    private enum class RecState { IDLE, RECORDING, PAUSED }
 
     // Vistas
     private lateinit var tvTimer: TextView
     private lateinit var tvStatus: TextView
-    private lateinit var btnRecord: MaterialButton
-    private lateinit var btnSave: MaterialButton
-    private lateinit var btnDiscard: MaterialButton
+    private lateinit var liveWave: WaveformView
+    private lateinit var btnRecord: ImageButton
+    private lateinit var tvRecordLabel: TextView
+    private lateinit var btnSave: ImageButton
+    private lateinit var btnDiscard: ImageButton
+    private lateinit var colSave: View
+    private lateinit var colDiscard: View
     private lateinit var tvEmpty: TextView
     private lateinit var playerPanel: View
     private lateinit var tvPlayerTitle: TextView
-    private lateinit var seekBar: SeekBar
+    private lateinit var playWave: WaveformView
     private lateinit var tvPosition: TextView
     private lateinit var tvDuration: TextView
     private lateinit var btnPlayPause: ImageButton
@@ -58,12 +62,10 @@ class MainActivity : AppCompatActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
 
-    // Grabación
-    private var recorder: MediaRecorder? = null
-    private var recState = RecState.IDLE
-    private var recFile: File? = null
-    private var recAccumulated = 0L
-    private var recSegmentStart = 0L
+    // Grabación (vive en RecordingService para poder seguir en segundo plano)
+    private var service: RecordingService? = null
+    private var lastState = RecordingService.State.IDLE
+    private val recState get() = service?.state ?: RecordingService.State.IDLE
 
     // Reproducción
     private var player: MediaPlayer? = null
@@ -71,18 +73,38 @@ class MainActivity : AppCompatActivity() {
     private var userSeeking = false
     private val speeds = floatArrayOf(1.0f, 1.5f, 2.0f)
     private var speedIndex = 0
+    private var anchorPos = 0L
+    private var anchorTime = 0L
 
     private val recordingsDir by lazy { File(filesDir, "recordings").apply { mkdirs() } }
 
-    private val askMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startRecording() else toast("Se necesita permiso de micrófono para grabar")
+    private val askPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        if (hasMic()) startRecording() else toast("Se necesita permiso de micrófono para grabar")
+    }
+
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            val s = (binder as RecordingService.LocalBinder).service
+            service = s
+            s.onStateChanged = { runOnUiThread { onRecStateChanged() } }
+            if (s.state != RecordingService.State.IDLE && lastState == RecordingService.State.IDLE) liveWave.startLive()
+            onRecStateChanged()
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            service = null
+        }
     }
 
     private val ticker = object : Runnable {
         override fun run() {
+            val s = service
+            if (s != null && s.state == RecordingService.State.RECORDING) {
+                liveWave.addLiveLevel(WaveformView.level(s.amplitude() / 32767f))
+            }
             updateRecTimer()
-            updatePlayerProgress()
-            handler.postDelayed(this, 200)
+            updatePositionLabel()
+            handler.postDelayed(this, 50)
         }
     }
 
@@ -92,18 +114,25 @@ class MainActivity : AppCompatActivity() {
 
         tvTimer = findViewById(R.id.tvTimer)
         tvStatus = findViewById(R.id.tvStatus)
+        liveWave = findViewById(R.id.liveWave)
         btnRecord = findViewById(R.id.btnRecord)
+        tvRecordLabel = findViewById(R.id.tvRecordLabel)
         btnSave = findViewById(R.id.btnSave)
         btnDiscard = findViewById(R.id.btnDiscard)
+        colSave = findViewById(R.id.colSave)
+        colDiscard = findViewById(R.id.colDiscard)
         tvEmpty = findViewById(R.id.tvEmpty)
         playerPanel = findViewById(R.id.playerPanel)
         tvPlayerTitle = findViewById(R.id.tvPlayerTitle)
-        seekBar = findViewById(R.id.seekBar)
+        playWave = findViewById(R.id.playWave)
         tvPosition = findViewById(R.id.tvPosition)
         tvDuration = findViewById(R.id.tvDuration)
         btnPlayPause = findViewById(R.id.btnPlayPause)
         btnSpeed = findViewById(R.id.btnSpeed)
         timerDefaultColor = tvTimer.textColors
+
+        liveWave.startLive()
+        liveWave.setLiveActive(false)
 
         adapter = RecordingsAdapter(
             onClick = { play(it) },
@@ -116,9 +145,9 @@ class MainActivity : AppCompatActivity() {
 
         btnRecord.setOnClickListener {
             when (recState) {
-                RecState.IDLE -> checkPermissionAndRecord()
-                RecState.RECORDING -> pauseRecording()
-                RecState.PAUSED -> resumeRecording()
+                RecordingService.State.IDLE -> checkPermissionsAndRecord()
+                RecordingService.State.RECORDING -> service?.pause()
+                RecordingService.State.PAUSED -> service?.resume()
             }
         }
         btnSave.setOnClickListener { stopAndSave() }
@@ -133,23 +162,17 @@ class MainActivity : AppCompatActivity() {
         }
         findViewById<ImageButton>(R.id.btnClosePlayer).setOnClickListener { closePlayer() }
 
-        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
-                if (fromUser) {
-                    tvPosition.text = formatTime(progress.toLong())
-                    player?.seekTo(progress)
-                }
+        playWave.showKnob = true
+        playWave.positionProvider = { currentProgress() }
+        playWave.onSeek = { p, finished ->
+            player?.let { mp ->
+                val pos = (p * mp.duration).toInt()
+                userSeeking = !finished
+                tvPosition.text = formatTime(pos.toLong())
+                mp.seekTo(pos)
+                resetAnchor(pos.toLong())
             }
-
-            override fun onStartTrackingTouch(sb: SeekBar) {
-                userSeeking = true
-            }
-
-            override fun onStopTrackingTouch(sb: SeekBar) {
-                userSeeking = false
-                player?.seekTo(sb.progress)
-            }
-        })
+        }
 
         updateRecUi()
         loadRecordings()
@@ -157,20 +180,21 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        bindService(Intent(this, RecordingService::class.java), connection, Context.BIND_AUTO_CREATE)
         handler.post(ticker)
     }
 
     override fun onStop() {
         super.onStop()
         handler.removeCallbacks(ticker)
-        // Sin segundo plano: al salir de la app se pausa la grabación y la reproducción.
-        if (recState == RecState.RECORDING) pauseRecording()
+        // La grabación sigue en segundo plano; la reproducción se pausa.
         pausePlayback()
+        service?.onStateChanged = null
+        service = null
+        unbindService(connection)
     }
 
     override fun onDestroy() {
-        // Si la app se cierra con una grabación abierta, se cierra el archivo para no perderla.
-        if (recorder != null) finishRecorder()
         player?.release()
         player = null
         super.onDestroy()
@@ -178,101 +202,42 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- Grabación ----------
 
-    private fun checkPermissionAndRecord() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            startRecording()
-        } else {
-            askMic.launch(Manifest.permission.RECORD_AUDIO)
+    private fun hasMic() =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    private fun checkPermissionsAndRecord() {
+        val needed = mutableListOf<String>()
+        if (!hasMic()) needed.add(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+            !notifAsked
+        ) {
+            needed.add(Manifest.permission.POST_NOTIFICATIONS)
+            notifAsked = true
         }
+        if (needed.isEmpty()) startRecording() else askPermissions.launch(needed.toTypedArray())
     }
+
+    private var notifAsked = false
 
     private fun startRecording() {
+        val s = service ?: run {
+            toast("Intenta de nuevo en un momento")
+            return
+        }
         pausePlayback()
         val name = "Grabación " + SimpleDateFormat("yyyy-MM-dd HH.mm.ss", Locale.getDefault()).format(Date())
-        val file = File(recordingsDir, "$name.m4a")
-
-        val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else @Suppress("DEPRECATION") MediaRecorder()
-        try {
-            r.setAudioSource(MediaRecorder.AudioSource.MIC)
-            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            r.setAudioEncodingBitRate(128_000)
-            r.setAudioSamplingRate(44_100)
-            r.setOutputFile(file.absolutePath)
-            r.prepare()
-            r.start()
-        } catch (e: Exception) {
-            r.release()
-            file.delete()
-            toast("No se pudo iniciar la grabación")
-            return
-        }
-
-        recorder = r
-        recFile = file
-        recAccumulated = 0L
-        recSegmentStart = SystemClock.elapsedRealtime()
-        recState = RecState.RECORDING
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        updateRecUi()
-    }
-
-    private fun pauseRecording() {
-        if (recState != RecState.RECORDING) return
-        try {
-            recorder?.pause()
-        } catch (e: Exception) {
-            return
-        }
-        recAccumulated += SystemClock.elapsedRealtime() - recSegmentStart
-        recState = RecState.PAUSED
-        updateRecUi()
-    }
-
-    private fun resumeRecording() {
-        if (recState != RecState.PAUSED) return
-        try {
-            recorder?.resume()
-        } catch (e: Exception) {
-            toast("No se pudo retomar la grabación")
-            return
-        }
-        recSegmentStart = SystemClock.elapsedRealtime()
-        recState = RecState.RECORDING
-        updateRecUi()
-    }
-
-    /** Detiene y libera el grabador. Devuelve el archivo si quedó válido. */
-    private fun finishRecorder(): File? {
-        val r = recorder ?: return null
-        val file = recFile
-        var ok = true
-        try {
-            r.stop()
-        } catch (e: Exception) {
-            ok = false // pasa cuando la grabación es demasiado corta
-        }
-        r.release()
-        recorder = null
-        recFile = null
-        recState = RecState.IDLE
-        recAccumulated = 0L
-        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        updateRecUi()
-        if (!ok) {
-            file?.delete()
-            return null
-        }
-        return file
+        liveWave.startLive()
+        if (!s.start(File(recordingsDir, "$name.m4a"))) toast("No se pudo iniciar la grabación")
     }
 
     private fun stopAndSave() {
-        val file = finishRecorder()
+        val s = service ?: return
+        val file = s.stop()
         if (file == null) {
             toast("La grabación fue muy corta y no se guardó")
             return
         }
-        loadRecordings()
         promptRename(file, isNew = true)
     }
 
@@ -281,51 +246,64 @@ class MainActivity : AppCompatActivity() {
             .setTitle("¿Descartar grabación?")
             .setMessage("Se perderá lo grabado hasta ahora.")
             .setPositiveButton("Descartar") { _, _ ->
-                finishRecorder()?.delete()
+                service?.stop()?.delete()
                 toast("Grabación descartada")
             }
             .setNegativeButton("Cancelar", null)
             .show()
     }
 
-    private fun elapsedRecording(): Long =
-        recAccumulated + if (recState == RecState.RECORDING) SystemClock.elapsedRealtime() - recSegmentStart else 0L
+    /** Se llama cuando cambia el estado, desde la app o desde la notificación. */
+    private fun onRecStateChanged() {
+        val now = recState
+        if (now == RecordingService.State.IDLE && lastState != RecordingService.State.IDLE) {
+            liveWave.startLive()
+            handler.post { loadRecordings() } // después de que se guarde o borre el archivo
+        }
+        lastState = now
+        updateRecUi()
+    }
 
     private fun updateRecTimer() {
-        tvTimer.text = formatTime(elapsedRecording())
+        tvTimer.text = formatTime(service?.elapsed() ?: 0L)
     }
 
     private fun updateRecUi() {
         when (recState) {
-            RecState.IDLE -> {
-                btnRecord.text = "Grabar"
-                btnRecord.setIconResource(R.drawable.ic_mic)
+            RecordingService.State.IDLE -> {
+                btnRecord.setImageResource(R.drawable.ic_mic)
+                tvRecordLabel.text = "Grabar"
                 tvStatus.text = "Toca Grabar para empezar"
                 tvTimer.setTextColor(timerDefaultColor)
+                liveWave.setLiveActive(false)
             }
-            RecState.RECORDING -> {
-                btnRecord.text = "Pausar"
-                btnRecord.setIconResource(R.drawable.ic_pause)
+            RecordingService.State.RECORDING -> {
+                btnRecord.setImageResource(R.drawable.ic_pause)
+                tvRecordLabel.text = "Pausar"
                 tvStatus.text = "Grabando…"
                 tvTimer.setTextColor(ContextCompat.getColor(this, R.color.record_red))
+                liveWave.setLiveActive(true)
             }
-            RecState.PAUSED -> {
-                btnRecord.text = "Retomar"
-                btnRecord.setIconResource(R.drawable.ic_mic)
+            RecordingService.State.PAUSED -> {
+                btnRecord.setImageResource(R.drawable.ic_mic)
+                tvRecordLabel.text = "Retomar"
                 tvStatus.text = "En pausa"
                 tvTimer.setTextColor(timerDefaultColor)
+                liveWave.setLiveActive(false)
             }
         }
-        val active = recState != RecState.IDLE
+        val active = recState != RecordingService.State.IDLE
         btnSave.isEnabled = active
         btnDiscard.isEnabled = active
+        colSave.alpha = if (active) 1f else 0.35f
+        colDiscard.alpha = if (active) 1f else 0.35f
         updateRecTimer()
     }
 
     // ---------- Lista ----------
 
     private fun loadRecordings() {
-        val inProgress = recFile
+        val inProgress = service?.file
         val files = recordingsDir.listFiles()
             ?.filter { it.isFile && it.extension == "m4a" && it != inProgress }
             ?.sortedByDescending { it.lastModified() }
@@ -445,7 +423,7 @@ class MainActivity : AppCompatActivity() {
     // ---------- Reproducción ----------
 
     private fun play(rec: Recording) {
-        if (recState != RecState.IDLE) {
+        if (recState != RecordingService.State.IDLE) {
             toast("Guarda o descarta la grabación antes de reproducir")
             return
         }
@@ -466,27 +444,37 @@ class MainActivity : AppCompatActivity() {
         }
         mp.setOnCompletionListener {
             it.seekTo(0)
+            resetAnchor(0)
             updatePlayButton()
-            updatePlayerProgress()
         }
 
         player = mp
         playing = rec
         playerPanel.visibility = View.VISIBLE
         tvPlayerTitle.text = rec.name
-        seekBar.max = mp.duration
-        seekBar.progress = 0
         tvDuration.text = formatTime(mp.duration.toLong())
+        tvPosition.text = formatTime(0)
+
+        // Ondas: primero planas, luego las reales cuando termine de analizar el audio.
+        playWave.setPeaks(null)
+        playWave.progress = 0f
+        val file = rec.file
+        thread {
+            val peaks = WaveformLoader.load(file)
+            runOnUiThread { if (playing?.file == file && peaks != null) playWave.setPeaks(peaks) }
+        }
+
         mp.start()
         applySpeed()
+        resetAnchor(0)
         adapter.setPlaying(rec.file)
         updatePlayButton()
-        updatePlayerProgress()
     }
 
     private fun togglePlay() {
         val mp = player ?: return
         if (mp.isPlaying) mp.pause() else mp.start()
+        resetAnchor(mp.currentPosition.toLong())
         updatePlayButton()
     }
 
@@ -500,8 +488,9 @@ class MainActivity : AppCompatActivity() {
         val mp = player ?: return
         val pos = (mp.currentPosition + deltaMs).coerceIn(0, mp.duration)
         mp.seekTo(pos)
-        seekBar.progress = pos
+        resetAnchor(pos.toLong())
         tvPosition.text = formatTime(pos.toLong())
+        if (!mp.isPlaying && mp.duration > 0) playWave.progress = pos.toFloat() / mp.duration
     }
 
     private fun applySpeed() {
@@ -515,22 +504,51 @@ class MainActivity : AppCompatActivity() {
         }
         // Cambiar la velocidad arranca el audio en algunos teléfonos; se respeta la pausa.
         if (!wasPlaying && mp.isPlaying) mp.pause()
+        resetAnchor(mp.currentPosition.toLong())
+    }
+
+    private fun resetAnchor(pos: Long) {
+        anchorPos = pos
+        anchorTime = SystemClock.uptimeMillis()
+    }
+
+    /**
+     * Posición suavizada (0..1). El reproductor reporta la posición a saltos,
+     * así que se calcula con el reloj y solo se corrige si se desfasa.
+     */
+    private fun currentProgress(): Float {
+        val mp = player ?: return 0f
+        val dur = mp.duration
+        if (dur <= 0) return 0f
+        val real = mp.currentPosition.toLong()
+        val now = SystemClock.uptimeMillis()
+        var est = if (mp.isPlaying) anchorPos + ((now - anchorTime) * speeds[speedIndex]).toLong() else real
+        if (!mp.isPlaying || abs(est - real) > 300) {
+            resetAnchor(real)
+            est = real
+        }
+        return est.coerceIn(0L, dur.toLong()).toFloat() / dur
+    }
+
+    private fun updatePositionLabel() {
+        val mp = player ?: return
+        if (userSeeking || !mp.isPlaying) return
+        tvPosition.text = formatTime(mp.currentPosition.toLong())
     }
 
     private fun updatePlayButton() {
-        val isPlaying = player?.isPlaying == true
+        val mp = player
+        val isPlaying = mp?.isPlaying == true
         btnPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
-    }
-
-    private fun updatePlayerProgress() {
-        val mp = player ?: return
-        if (userSeeking) return
-        val pos = mp.currentPosition
-        seekBar.progress = pos
-        tvPosition.text = formatTime(pos.toLong())
+        playWave.animating = isPlaying
+        if (mp != null && !isPlaying && mp.duration > 0) {
+            playWave.progress = mp.currentPosition.toFloat() / mp.duration
+            tvPosition.text = formatTime(mp.currentPosition.toLong())
+        }
     }
 
     private fun releasePlayer() {
+        playWave.animating = false
         player?.release()
         player = null
         playing = null
