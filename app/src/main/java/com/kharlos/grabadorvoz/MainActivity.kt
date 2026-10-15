@@ -17,6 +17,7 @@ import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -86,7 +87,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var foldersAdapter: FoldersAdapter
 
     private val handler = Handler(Looper.getMainLooper())
-    private val store by lazy { RecordingStore(File(filesDir, "recordings")) }
+    private lateinit var store: RecordingStore
     private val prefs by lazy { getSharedPreferences("ajustes", Context.MODE_PRIVATE) }
 
     // Grabación (vive en RecordingService para poder seguir en segundo plano)
@@ -110,6 +111,12 @@ class MainActivity : AppCompatActivity() {
 
     private val askPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         if (hasMic()) startRecording() else toast("Se necesita permiso de micrófono para grabar")
+    }
+
+    private val askStorage = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        store = RecordingStore(storageRoot())
+        migrateInternal()
+        refreshAll()
     }
 
     private val editLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -193,6 +200,7 @@ class MainActivity : AppCompatActivity() {
         btnSpeed = findViewById(R.id.btnSpeed)
         timerDefaultColor = tvTimer.textColors
 
+        store = RecordingStore(storageRoot())
         topSection = findViewById(R.id.topSection)
         listSheet = findViewById(R.id.listSheet)
         rvRecordings = findViewById(R.id.rvRecordings)
@@ -280,6 +288,83 @@ class MainActivity : AppCompatActivity() {
 
         updateRecUi()
         refreshAll()
+        setupStorage()
+    }
+
+    // ================= Ubicación de los archivos =================
+
+    private val internalRoot get() = File(filesDir, "recordings")
+
+    private val publicRoot
+        get() = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "Grabador de voz")
+
+    /** Permiso para ver todos los audios de la carpeta pública (incluso tras reinstalar la app). */
+    private fun storagePermission(): String = when {
+        Build.VERSION.SDK_INT >= 33 -> Manifest.permission.READ_MEDIA_AUDIO
+        Build.VERSION.SDK_INT >= 30 -> Manifest.permission.READ_EXTERNAL_STORAGE
+        else -> Manifest.permission.WRITE_EXTERNAL_STORAGE
+    }
+
+    private fun has(permission: String) =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+
+    /** Música/Grabador de voz; en Android 9 o anterior sin permiso, se queda en la memoria privada. */
+    private fun storageRoot(): File {
+        val usePublic = Build.VERSION.SDK_INT >= 30 || has(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        if (usePublic) {
+            val dir = publicRoot
+            if (dir.exists() || dir.mkdirs()) return dir
+        }
+        return internalRoot
+    }
+
+    private fun setupStorage() {
+        val perm = storagePermission()
+        if (!has(perm) && !prefs.getBoolean("permiso_almacenamiento_pedido", false)) {
+            prefs.edit().putBoolean("permiso_almacenamiento_pedido", true).apply()
+            askStorage.launch(perm)
+        } else {
+            migrateInternal()
+        }
+    }
+
+    /** Pasa las grabaciones de versiones anteriores (memoria privada) a la carpeta pública. */
+    private fun migrateInternal() {
+        val src = internalRoot
+        val dst = store.root
+        if (!src.exists() || src.absolutePath == dst.absolutePath) return
+        thread {
+            var moved = 0
+            fun moveTree(from: File, to: File) {
+                to.mkdirs()
+                from.listFiles()?.forEach { f ->
+                    if (f.isDirectory) {
+                        moveTree(f, File(to, f.name))
+                    } else if (f.extension == "m4a") {
+                        var target = File(to, f.name)
+                        var i = 2
+                        while (target.exists()) {
+                            target = File(to, "${f.nameWithoutExtension} ($i).m4a")
+                            i++
+                        }
+                        try {
+                            f.copyTo(target)
+                            target.setLastModified(f.lastModified())
+                            f.delete()
+                            moved++
+                        } catch (e: Exception) {
+                            target.delete()
+                        }
+                    }
+                }
+                from.delete() // solo se borra si quedó vacía
+            }
+            moveTree(src, dst)
+            runOnUiThread {
+                if (moved > 0) toast("$moved grabación(es) movidas a Música/Grabador de voz")
+                refreshAll()
+            }
+        }
     }
 
     override fun onStart() {
@@ -781,7 +866,8 @@ class MainActivity : AppCompatActivity() {
                 folders.map { FolderItem(it, it.name, store.audiosIn(it).size, false) }
             val total = rootCount + items.drop(1).sumOf { it.count }
             tvLibTitle.text = "Biblioteca"
-            tvLibSubtitle.text = "${folders.size} carpeta(s) · $total audio(s)"
+            val where = if (store.root.absolutePath == publicRoot.absolutePath) " · en Música/Grabador de voz" else ""
+            tvLibSubtitle.text = "${folders.size} carpeta(s) · $total audio(s)$where"
             tvLibHint.visibility = if (folders.isEmpty()) View.VISIBLE else View.GONE
             tvLibEmpty.visibility = View.GONE
             btnLibAction.visibility = View.VISIBLE
